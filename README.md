@@ -382,7 +382,7 @@ This project is created for educational purposes as part of the DBMS curriculum 
 
 **Made with ❤️ by TY-A Computer Engineering Students**
 
-🎓 **Academic Year 2024-2025**
+🎓 **Academic Year 2025-2026**
 
 © 2025 UniMail - KKWIEER | Database Management Systems Mini Project
 
