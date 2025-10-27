@@ -20,12 +20,12 @@ UniMail is a web-based institutional email management application built as a min
 
 ## 👥 Team Members
 
-| Name | Role | GitHub |
-|------|------|--------|
-| Hrishikesh Gavai | Lead Developer | [@Hrishikesh-Gavai](https://github.com/Hrishikesh-Gavai) |
-| Dhruvesh Patil | Backend Developer | - |
-| Nakshatra Rao | UI/UX Developer | - |
-| Palak Lokwani | Database Designer | - |
+| Name | Role |
+|------|------|
+| Hrishikesh Gavai | Developer |
+| Dhruvesh Patil | Developer |
+| Nakshatra Rao | Developer |
+| Palak Lokwani | Developer |
 
 ***
 
