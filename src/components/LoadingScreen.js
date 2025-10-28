@@ -9,7 +9,7 @@ export const LoadingScreen = () => {
       left: 0,
       right: 0,
       bottom: 0,
-      backgroundImage: 'url(https://images.unsplash.com/photo-1509343256512-d77a5cb3791b?q=100&w=2400&auto=format&fit=crop&ixlib=rb-4.0.3)',
+      backgroundImage: 'url(https://clinquant-sprinkles-e2d6e4.netlify.app/assets/kkw-home-DwveAqbx.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat',
