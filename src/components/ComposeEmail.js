@@ -46,51 +46,46 @@ const ComposeEmail = ({ onRecordSaved }) => {
   }, []);
 
   const fetchEmailsFromSupabase = async () => {
-    setLoadingEmails(true);
-    try {
-      const [adminRes, principalRes, deansRes, hodRes] = await Promise.all([
-        supabase.from('admin').select('email, name, department'),
-        supabase.from('principal').select('email, name, department'),
-        supabase.from('deans').select('email, name, department'),
-        supabase.from('hod').select('email, name, department')
-      ]);
+  setLoadingEmails(true);
+  try {
+    const [adminRes, principalRes, deansRes, hodRes] = await Promise.all([
+      supabase.from("admin").select("email, name, department"),
+      supabase.from("principal").select("email, name, department"),
+      supabase.from("deans").select("email, name, department"),
+      supabase.from("hod").select("email, name, department"),
+    ]);
 
-      const toOptions = {};
-      
-      if (principalRes.data && principalRes.data.length > 0) {
-        toOptions['Principal'] = {
-          'Principal': principalRes.data.map(p => p.email)
-        };
-      }
-      
-      if (deansRes.data && deansRes.data.length > 0) {
-        toOptions['Deans'] = {
-          'Deans': deansRes.data.map(d => d.email)
-        };
-      }
+    const toOptions = {};
 
-      if (hodRes.data && hodRes.data.length > 0) {
-        toOptions['HOD'] = {
-          'HOD': hodRes.data.map(h => h.email)
-        };
-      }
-
-      setEmailOptions(toOptions);
-
-      if (adminRes.data && adminRes.data.length > 0) {
-        setFromEmailOptions({
-          'Admin Emails': adminRes.data.map(a => a.email)
-        });
-      }
-
-      showNotification('Email contacts loaded successfully', 'success');
-    } catch (error) {
-      console.error('Error fetching emails:', error);
-      showNotification('Failed to load email contacts', 'error');
-    } finally {
-      setLoadingEmails(false);
+    if (principalRes?.data?.length > 0) {
+      toOptions["Principal"] = principalRes.data.map((p) => p.email);
     }
-  };
+
+    if (deansRes?.data?.length > 0) {
+      toOptions["Deans"] = deansRes.data.map((d) => d.email);
+    }
+
+    if (hodRes?.data?.length > 0) {
+      toOptions["HOD"] = hodRes.data.map((h) => h.email);
+    }
+
+    setEmailOptions(toOptions);
+
+    if (adminRes?.data?.length > 0) {
+      setFromEmailOptions({
+        "Admin Emails": adminRes.data.map((a) => a.email),
+      });
+    }
+
+    showNotification("Email contacts loaded successfully", "success");
+  } catch (error) {
+    console.error("Error fetching emails:", error);
+    showNotification("Failed to load email contacts", "error");
+  } finally {
+    setLoadingEmails(false);
+  }
+};
+
 
   useEffect(() => {
     const handleClickOutside = (event) => {
