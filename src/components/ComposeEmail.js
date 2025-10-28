@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { supabase } from "../services/supabase";
 import { showNotification, showPromiseNotification } from "../utils/notifications";
 import { InlineLoading } from "./LoadingScreen";
-import { Mail, Send, Save, Upload, FileText, ChevronDown, Folder, X, Languages, User, Calendar, Info, Trash2, Paperclip } from 'lucide-react';
+import { Mail, Send, Save, Upload, FileText, ChevronDown, Folder, X, Languages, User, Calendar, Info, Trash2, Paperclip, CheckSquare } from 'lucide-react';
 
 const ComposeEmail = ({ onRecordSaved }) => {
   const [formData, setFormData] = useState({
@@ -46,45 +46,52 @@ const ComposeEmail = ({ onRecordSaved }) => {
   }, []);
 
   const fetchEmailsFromSupabase = async () => {
-  setLoadingEmails(true);
-  try {
-    const [adminRes, principalRes, deansRes, hodRes] = await Promise.all([
-      supabase.from("admin").select("email, name, department"),
-      supabase.from("principal").select("email, name, department"),
-      supabase.from("deans").select("email, name, department"),
-      supabase.from("hod").select("email, name, department"),
-    ]);
+    setLoadingEmails(true);
+    try {
+      const [adminRes, principalRes, deansRes, hodRes] = await Promise.all([
+        supabase.from("admin").select("email, name, department"),
+        supabase.from("principal").select("email, name, department"),
+        supabase.from("deans").select("email, name, department"),
+        supabase.from("hod").select("email, name, department"),
+      ]);
 
-    const toOptions = {};
+      const toOptions = {};
 
-    if (principalRes?.data?.length > 0) {
-      toOptions["Principal"] = principalRes.data.map((p) => p.email);
+      if (principalRes?.data?.length > 0) {
+        // Structured for nested categories, which seems to be the current setup's intention
+        toOptions["Principal"] = {
+          "All Principal": principalRes.data.map((p) => p.email),
+        };
+      }
+
+      if (deansRes?.data?.length > 0) {
+        toOptions["Deans"] = {
+          "All Deans": deansRes.data.map((d) => d.email),
+        };
+      }
+
+      if (hodRes?.data?.length > 0) {
+        toOptions["HOD"] = {
+          "All HODs": hodRes.data.map((h) => h.email),
+        };
+      }
+
+      setEmailOptions(toOptions);
+
+      if (adminRes?.data?.length > 0) {
+        setFromEmailOptions({
+          "Admin Emails": adminRes.data.map((a) => a.email),
+        });
+      }
+
+      showNotification("Email contacts loaded successfully", "success");
+    } catch (error) {
+      console.error("Error fetching emails:", error);
+      showNotification("Failed to load email contacts", "error");
+    } finally {
+      setLoadingEmails(false);
     }
-
-    if (deansRes?.data?.length > 0) {
-      toOptions["Deans"] = deansRes.data.map((d) => d.email);
-    }
-
-    if (hodRes?.data?.length > 0) {
-      toOptions["HOD"] = hodRes.data.map((h) => h.email);
-    }
-
-    setEmailOptions(toOptions);
-
-    if (adminRes?.data?.length > 0) {
-      setFromEmailOptions({
-        "Admin Emails": adminRes.data.map((a) => a.email),
-      });
-    }
-
-    showNotification("Email contacts loaded successfully", "success");
-  } catch (error) {
-    console.error("Error fetching emails:", error);
-    showNotification("Failed to load email contacts", "error");
-  } finally {
-    setLoadingEmails(false);
-  }
-};
+  };
 
 
   useEffect(() => {
@@ -150,10 +157,31 @@ const ComposeEmail = ({ onRecordSaved }) => {
     } else {
       showNotification("Email already added", "warning");
     }
-    setDropdownOpen(false);
-    setActiveFolder(null);
+    // setDropdownOpen(false); // Keep dropdown open for multiple selections
+    // setActiveFolder(null);
     if (toInputRef.current) toInputRef.current.focus();
   };
+
+  // --- NEW FUNCTION: Select All Emails in a Category ---
+  const selectAllEmails = (categoryKey) => {
+    const emailsToAdd = [];
+    
+    // Iterate over all subcategories in the active category
+    Object.values(emailOptions[categoryKey]).forEach(emailList => {
+      emailsToAdd.push(...emailList);
+    });
+
+    const uniqueEmailsToAdd = [...new Set(emailsToAdd)];
+    const newEmails = uniqueEmailsToAdd.filter(email => !formData.to.includes(email));
+
+    if (newEmails.length > 0) {
+      setFormData(prev => ({ ...prev, to: [...prev.to, ...newEmails] }));
+      showNotification(`Added ${newEmails.length} emails from ${categoryKey}`, "success");
+    } else {
+      showNotification(`All emails from ${categoryKey} are already added`, "info");
+    }
+  };
+  // -----------------------------------------------------
 
   const setFromEmail = (email) => {
     setFormData(prev => ({ ...prev, from: email }));
@@ -187,87 +215,87 @@ const ComposeEmail = ({ onRecordSaved }) => {
   };
 
   const handleFileUpload = async (files) => {
-  if (!files.length) return;
-  
-  const validFiles = Array.from(files).filter(file => {
-    if (file.type !== 'application/pdf') {
-      showNotification(`${file.name}: Only PDF files are allowed`, "error");
-      return false;
-    }
-    if (file.size > 40 * 1024 * 1024) {
-      showNotification(`${file.name}: File size exceeds 40MB limit`, "error");
-      return false;
-    }
-    return true;
-  });
-
-  // Check for duplicates and suggest alternatives
-  const filesToUpload = [];
-  
-  for (const file of validFiles) {
-    const fileName = file.name;
+    if (!files.length) return;
     
-    // Check if file exists in storage
-    const { data: existingFiles } = await supabase.storage
-      .from('pdfs')
-      .list('', { search: fileName });
+    const validFiles = Array.from(files).filter(file => {
+      if (file.type !== 'application/pdf') {
+        showNotification(`${file.name}: Only PDF files are allowed`, "error");
+        return false;
+      }
+      if (file.size > 40 * 1024 * 1024) {
+        showNotification(`${file.name}: File size exceeds 40MB limit`, "error");
+        return false;
+      }
+      return true;
+    });
 
-    if (existingFiles && existingFiles.length > 0) {
-      // File exists, suggest alternatives
-      const baseName = fileName.substring(0, fileName.lastIndexOf('.'));
-      const extension = fileName.substring(fileName.lastIndexOf('.'));
-      
-      // Generate suggestions
-      const suggestions = [
-        `${baseName}_1${extension}`,
-        `${baseName}_2${extension}`,
-        `${baseName}_${Date.now()}${extension}`
-      ];
-      
-      showNotification(
-        `⚠️ "${fileName}" already exists in database!<br><br>Suggested alternatives:<br>• ${suggestions[0]}<br>• ${suggestions[1]}<br>• ${suggestions[2]}<br><br>Please rename the file and try again.`,
-        "warning"
-      );
-      
-      continue; // Skip this file
-    }
+    // Check for duplicates and suggest alternatives
+    const filesToUpload = [];
     
-    filesToUpload.push(file);
-  }
+    for (const file of validFiles) {
+      const fileName = file.name;
+      
+      // Check if file exists in storage
+      const { data: existingFiles } = await supabase.storage
+        .from('pdfs')
+        .list('', { search: fileName });
 
-  if (filesToUpload.length === 0) {
-    return; // No files to upload
-  }
-
-  // Upload files that don't exist
-  showPromiseNotification(
-    Promise.all(
-      filesToUpload.map(async (file) => {
-        try {
-          const fileName = file.name;
-          const { error } = await supabase.storage.from("pdfs").upload(fileName, file, {
-            upsert: false // ✅ Changed to false - won't overwrite
-          });
-          if (error) throw error;
-          setFormData((prev) => ({
-            ...prev,
-            pdfFiles: [...prev.pdfFiles, file],
-            pdfFileNames: [...prev.pdfFileNames, fileName],
-          }));
-          return fileName;
-        } catch (err) {
-          console.error("PDF upload error:", err);
-          throw new Error(`Failed to upload: ${file.name}`);
-        }
-      })
-    ),
-    {
-      loading: `Uploading ${filesToUpload.length} file(s)...`,
-      success: `Successfully uploaded ${filesToUpload.length} file(s)`,
-      error: 'Some files failed to upload'
+      if (existingFiles && existingFiles.length > 0) {
+        // File exists, suggest alternatives
+        const baseName = fileName.substring(0, fileName.lastIndexOf('.'));
+        const extension = fileName.substring(fileName.lastIndexOf('.'));
+        
+        // Generate suggestions
+        const suggestions = [
+          `${baseName}_1${extension}`,
+          `${baseName}_2${extension}`,
+          `${baseName}_${Date.now()}${extension}`
+        ];
+        
+        showNotification(
+          `⚠️ "${fileName}" already exists in database!<br><br>Suggested alternatives:<br>• ${suggestions[0]}<br>• ${suggestions[1]}<br>• ${suggestions[2]}<br><br>Please rename the file and try again.`,
+          "warning"
+        );
+        
+        continue; // Skip this file
+      }
+      
+      filesToUpload.push(file);
     }
-  );
-};
+
+    if (filesToUpload.length === 0) {
+      return; // No files to upload
+    }
+
+    // Upload files that don't exist
+    showPromiseNotification(
+      Promise.all(
+        filesToUpload.map(async (file) => {
+          try {
+            const fileName = file.name;
+            const { error } = await supabase.storage.from("pdfs").upload(fileName, file, {
+              upsert: false // ✅ Changed to false - won't overwrite
+            });
+            if (error) throw error;
+            setFormData((prev) => ({
+              ...prev,
+              pdfFiles: [...prev.pdfFiles, file],
+              pdfFileNames: [...prev.pdfFileNames, fileName],
+            }));
+            return fileName;
+          } catch (err) {
+            console.error("PDF upload error:", err);
+            throw new Error(`Failed to upload: ${file.name}`);
+          }
+        })
+      ),
+      {
+        loading: `Uploading ${filesToUpload.length} file(s)...`,
+        success: `Successfully uploaded ${filesToUpload.length} file(s)`,
+        error: 'Some files failed to upload'
+      }
+    );
+  };
 
 
   const handleFileInputChange = (e) => {
@@ -771,6 +799,33 @@ const ComposeEmail = ({ onRecordSaved }) => {
 
                   {activeFolder === category && (
                     <div>
+                      {/* --- ADDED Select All Button HERE --- */}
+                      <div style={{
+                        padding: '8px 16px',
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        background: 'var(--primary-ultralight)',
+                      }}>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent folder from collapsing
+                            selectAllEmails(category);
+                          }} 
+                          className="btn btn-sm" 
+                          style={{ 
+                            background: 'var(--primary)', 
+                            color: 'var(--white)',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
+                        >
+                          <CheckSquare size={14} />
+                          Select All {category}
+                        </button>
+                      </div>
+                      {/* ---------------------------------- */}
                       {Object.entries(subcategories).map(([subcat, emails]) => (
                         <div key={subcat}>
                           <div style={{
