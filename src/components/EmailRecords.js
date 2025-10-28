@@ -256,7 +256,7 @@ const EmailRecords = () => {
           </div>
           <div className="card-header-text">
             <h2>Email Records</h2>
-            <p>Manage and review all your sent emails</p>
+            <p style={{ color: '#000000' }}>Manage and review all your sent emails</p>
           </div>
         </div>
 
