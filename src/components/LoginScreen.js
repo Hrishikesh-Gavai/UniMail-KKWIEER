@@ -83,7 +83,7 @@ const LoginScreen = ({ onLoginSuccess }) => {
       left: 0,
       right: 0,
       bottom: 0,
-      backgroundImage: 'url(https://images.unsplash.com/photo-1509343256512-d77a5cb3791b?q=100&w=2400&auto=format&fit=crop&ixlib=rb-4.0.3)',
+      backgroundImage: 'url(https://lh3.googleusercontent.com/gps-cs-s/AG0ilSx6KzoCJZv5Ije3v7vti8u7Jfe1FYyR-tH08Cr_tUpoaeJRbkgHsKxaIPNHLfgl_aGogdQ4iuEJGXbHnUXkHu-GuMmCPE1LBMZTUitczBGQGjtekZxPFA18RPJH5ws8EcmWtzDI6g=s1360-w1360-h1020-rw)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat',
@@ -412,3 +412,4 @@ const LoginScreen = ({ onLoginSuccess }) => {
 };
 
 export default LoginScreen;
+
