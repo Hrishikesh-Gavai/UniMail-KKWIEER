@@ -83,7 +83,7 @@ const LoginScreen = ({ onLoginSuccess }) => {
       left: 0,
       right: 0,
       bottom: 0,
-      backgroundImage: 'url(https://lh3.googleusercontent.com/gps-cs-s/AG0ilSx6KzoCJZv5Ije3v7vti8u7Jfe1FYyR-tH08Cr_tUpoaeJRbkgHsKxaIPNHLfgl_aGogdQ4iuEJGXbHnUXkHu-GuMmCPE1LBMZTUitczBGQGjtekZxPFA18RPJH5ws8EcmWtzDI6g=s1360-w1360-h1020-rw)',
+      backgroundImage: 'url(https://clinquant-sprinkles-e2d6e4.netlify.app/assets/kkw-home-DwveAqbx.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat',
@@ -412,4 +412,5 @@ const LoginScreen = ({ onLoginSuccess }) => {
 };
 
 export default LoginScreen;
+
 
