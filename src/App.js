@@ -67,7 +67,7 @@ function App() {
   // Show main app after authentication and loading
   return (
     <div className="App" style={{
-      backgroundImage: 'url(https://images.unsplash.com/photo-1511113897571-447d6bc7b6b1?q=100&w=2400&auto=format&fit=crop&ixlib=rb-4.0.3)',
+      backgroundImage: 'url(https://clinquant-sprinkles-e2d6e4.netlify.app/assets/kkw-home-DwveAqbx.jpg)',
       backgroundSize: 'cover',
       backgroundPosition: 'center',
       backgroundRepeat: 'no-repeat',
