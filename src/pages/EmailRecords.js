@@ -20,12 +20,17 @@ import {
   AlertTriangle,
   MapPin,
   DollarSign,
+  Type,
 } from "lucide-react";
 
 const EmailRecords = () => {
   const [emailRecords, setEmailRecords] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
+  const [searchTermRomanized, setSearchTermRomanized] = useState("");
+  const [marathiSearchEnabled, setMarathiSearchEnabled] = useState(false);
+  const [isTranslatingSearch, setIsTranslatingSearch] = useState(false);
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState({});
   const [postalUpdating, setPostalUpdating] = useState({});
@@ -37,8 +42,11 @@ const EmailRecords = () => {
 
   const topScrollRef = useRef(null);
   const bottomScrollRef = useRef(null);
+  const searchInputRef = useRef(null);
 
-  // ========== MISSING FUNCTIONS ADDED ==========
+  const RECENT_LIMIT = 100; // Number of most recent emails to show when no date range
+
+  // ========== MISSING FUNCTIONS ==========
   const toggleRowExpand = (id) => {
     setExpandedRow(expandedRow === id ? null : id);
   };
@@ -62,7 +70,6 @@ const EmailRecords = () => {
         .delete()
         .eq("id", recordToDelete);
       if (error) throw error;
-      // Remove from local state
       setEmailRecords((prev) => prev.filter((r) => r.id !== recordToDelete));
       showNotification("Record deleted successfully", "success");
     } catch (error) {
@@ -71,6 +78,67 @@ const EmailRecords = () => {
     } finally {
       setDeleting((prev) => ({ ...prev, [recordToDelete]: false }));
       closeDeleteModal();
+    }
+  };
+  // ============================================
+
+  // ========== MARATHI TRANSLITERATION ==========
+  const translateRomanizedMarathi = async (text) => {
+    if (!text.trim()) {
+      setSearchTerm("");
+      setSearchTermRomanized("");
+      return;
+    }
+    setIsTranslatingSearch(true);
+    try {
+      const response = await fetch(
+        `https://inputtools.google.com/request?text=${encodeURIComponent(text)}&itc=mr-t-i0-und&num=1&cp=0&cs=1&ie=utf-8&oe=utf-8&app=demopage`
+      );
+      const data = await response.json();
+      if (data?.[0] === "SUCCESS" && data[1]?.[0]?.[1]?.length > 0) {
+        const translatedText = data[1][0][1][0];
+        setSearchTerm(translatedText);
+        setSearchTermRomanized(translatedText);
+      } else {
+        setSearchTerm(text);
+        setSearchTermRomanized(text);
+      }
+    } catch {
+      setSearchTerm(text);
+      setSearchTermRomanized(text);
+    } finally {
+      setIsTranslatingSearch(false);
+    }
+  };
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (marathiSearchEnabled && searchTermRomanized && searchTermRomanized !== searchTerm) {
+        translateRomanizedMarathi(searchTermRomanized);
+      }
+    }, 500);
+    return () => clearTimeout(timeoutId);
+  }, [searchTermRomanized, marathiSearchEnabled]);
+
+  const handleSearchInput = (e) => {
+    const value = e.target.value;
+    if (marathiSearchEnabled) {
+      setSearchTermRomanized(value);
+      if (!value.trim()) {
+        setSearchTerm("");
+      }
+    } else {
+      setSearchTerm(value);
+      setSearchTermRomanized(value);
+    }
+  };
+
+  const toggleMarathiSearchMode = () => {
+    setMarathiSearchEnabled(!marathiSearchEnabled);
+    if (!marathiSearchEnabled) {
+      setSearchTermRomanized(searchTerm);
+    } else {
+      setSearchTermRomanized(searchTerm);
     }
   };
   // ============================================
@@ -88,6 +156,8 @@ const EmailRecords = () => {
   };
 
   const loadEmailRecords = async () => {
+    const MIN_LOADING_MS = 800;
+    const startTime = Date.now();
     try {
       setLoading(true);
       const { data, error } = await supabase
@@ -101,7 +171,13 @@ const EmailRecords = () => {
       console.error("Error loading records:", error);
       showNotification("Failed to load email records", "error");
     } finally {
-      setLoading(false);
+      const elapsed = Date.now() - startTime;
+      const remaining = MIN_LOADING_MS - elapsed;
+      if (remaining > 0) {
+        setTimeout(() => setLoading(false), remaining);
+      } else {
+        setLoading(false);
+      }
     }
   };
 
@@ -113,25 +189,223 @@ const EmailRecords = () => {
     setSortConfig({ key, direction });
   };
 
-  const sortedRecords = [...emailRecords].sort((a, b) => {
-    if (sortConfig.key === "sent_date" || sortConfig.key === "created_at") {
-      return sortConfig.direction === "desc"
-        ? new Date(b[sortConfig.key]) - new Date(a[sortConfig.key])
-        : new Date(a[sortConfig.key]) - new Date(b[sortConfig.key]);
+  // Date filtering helper
+  const isDateInRange = (recordDate) => {
+    if (!recordDate) return false;
+    const dateStr = new Date(recordDate).toISOString().split('T')[0];
+    if (fromDate && toDate) {
+      return dateStr >= fromDate && dateStr <= toDate;
     }
-    if (sortConfig.key === "serial_number") {
-      return sortConfig.direction === "desc"
-        ? b.serial_number - a.serial_number
-        : a.serial_number - b.serial_number;
+    if (fromDate) {
+      return dateStr >= fromDate;
     }
-    if (a[sortConfig.key] < b[sortConfig.key]) {
-      return sortConfig.direction === "desc" ? 1 : -1;
+    if (toDate) {
+      return dateStr <= toDate;
     }
-    if (a[sortConfig.key] > b[sortConfig.key]) {
-      return sortConfig.direction === "desc" ? -1 : 1;
+    return true; // no date filters active
+  };
+
+  // ========== NEW LOGIC: Filter + Recent Limit + Sort ==========
+  // Step 1: Apply search and date filters to the full dataset
+  const getFilteredRecords = () => {
+    let filtered = [...emailRecords];
+
+    // Apply search filter
+    if (searchTerm) {
+      const searchLower = searchTerm.toLowerCase();
+      filtered = filtered.filter(
+        (record) =>
+          record.from_user?.toLowerCase().includes(searchLower) ||
+          record.to_user?.toLowerCase().includes(searchLower) ||
+          record.subject?.toLowerCase().includes(searchLower) ||
+          record.content?.toLowerCase().includes(searchLower) ||
+          record.subject_hindi?.toLowerCase().includes(searchLower) ||
+          record.content_hindi?.toLowerCase().includes(searchLower) ||
+          record.subject_marathi?.toLowerCase().includes(searchLower) ||
+          record.content_marathi?.toLowerCase().includes(searchLower) ||
+          record.place?.toLowerCase().includes(searchLower) ||
+          record.remarks?.toLowerCase().includes(searchLower) ||
+          record.serial_number?.toString().includes(searchLower)
+      );
     }
-    return 0;
-  });
+
+    // Apply date range filter
+    if (fromDate || toDate) {
+      filtered = filtered.filter((record) => isDateInRange(record.sent_date));
+    }
+
+    return filtered;
+  };
+
+  // Step 2: If NO date range is set, limit to the most recent RECENT_LIMIT records (by sent_date)
+  const applyRecentLimit = (records) => {
+    if (fromDate || toDate) return records; // date range active → show all matching
+    // Sort by sent_date descending and take first RECENT_LIMIT
+    return [...records]
+      .sort((a, b) => new Date(b.sent_date) - new Date(a.sent_date))
+      .slice(0, RECENT_LIMIT);
+  };
+
+  // Step 3: Apply user sorting (serial_number, sent_date, to_user, etc.)
+  const applySorting = (records) => {
+    return [...records].sort((a, b) => {
+      if (sortConfig.key === "sent_date" || sortConfig.key === "created_at") {
+        return sortConfig.direction === "desc"
+          ? new Date(b[sortConfig.key]) - new Date(a[sortConfig.key])
+          : new Date(a[sortConfig.key]) - new Date(b[sortConfig.key]);
+      }
+      if (sortConfig.key === "serial_number") {
+        return sortConfig.direction === "desc"
+          ? b.serial_number - a.serial_number
+          : a.serial_number - b.serial_number;
+      }
+      if (a[sortConfig.key] < b[sortConfig.key]) {
+        return sortConfig.direction === "desc" ? 1 : -1;
+      }
+      if (a[sortConfig.key] > b[sortConfig.key]) {
+        return sortConfig.direction === "desc" ? -1 : 1;
+      }
+      return 0;
+    });
+  };
+
+  // Final displayed records
+  const filteredRecords = (() => {
+    const step1 = getFilteredRecords();
+    const step2 = applyRecentLimit(step1);
+    const step3 = applySorting(step2);
+    return step3;
+  })();
+
+  // Helper to know if we are in "recent only" mode (for UI hint)
+  const isRecentOnlyMode = !fromDate && !toDate;
+
+  // ========== EXPORT: Uses the same filteredRecords (what the user sees) ==========
+  const downloadExcel = async () => {
+  try {
+    if (filteredRecords.length === 0) {
+      showNotification("No records to download", "warning");
+      return;
+    }
+
+    const ExcelJS = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Email Records');
+
+    // Set columns
+    worksheet.columns = [
+      { header: 'Serial No.', key: 'serialNo', width: 6 },
+      { header: 'Date', key: 'date', width: 11 },
+      { header: 'To Email', key: 'toEmail', width: 30 },
+      { header: 'Place', key: 'place', width: 8 },
+      { header: 'Sent by Post', key: 'sentByPost', width: 5 },
+      { header: 'Description', key: 'description', width: 30 },
+      { header: 'Stamp Received', key: 'stampReceived', width: 9 },
+      { header: 'Stamp Affixed', key: 'stampAffixed', width: 8 },
+      { header: 'Balance Left', key: 'balanceLeft', width: 8 },
+      { header: 'Remarks', key: 'remarks', width: 15 }
+    ];
+
+    // Title row
+    worksheet.getRow(1).height = 100;
+    worksheet.mergeCells('A1:J1');
+    const titleCell = worksheet.getCell('A1');
+    titleCell.value = "K. K. WAGH EDUCATION SOCIETY'S, NASHIK.\nOUTWARD REGISTER";
+    titleCell.font = { bold: true, size: 18 };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    titleCell.border = {
+      top: { style: 'thin' },
+      left: { style: 'thin' },
+      bottom: { style: 'thin' },
+      right: { style: 'thin' }
+    };
+
+    // Header row
+    const headerRow = worksheet.getRow(2);
+    headerRow.values = [
+      'Serial No.',
+      'Date',
+      'To Email',
+      'Place',
+      'Sent by Post',
+      'Description',
+      'Stamp Received',
+      'Stamp Affixed',
+      'Balance Left',
+      'Remarks'
+    ];
+    headerRow.font = { bold: true };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFF0F0F0' }
+    };
+    headerRow.height = 60;
+
+    headerRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' }
+      };
+    });
+
+    // Data rows
+    filteredRecords.forEach((record, idx) => {
+      const formattedEmails = record.to_user
+        ? record.to_user.split(',').map(email => email.trim()).join('\n')
+        : "";
+
+      const row = worksheet.addRow([
+        record.serial_number || idx + 1,
+        new Date(record.sent_date).toLocaleDateString("en-GB"),
+        formattedEmails,
+        record.place || "",
+        record.postal_sent ? "Yes" : "No",
+        record.subject || "",
+        record.stamp_received || 0,
+        record.stamp_affixed || 0,
+        record.balance_left || 0,
+        record.remarks || ""
+      ]);
+
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' }
+        };
+        cell.alignment = {
+          horizontal: 'center',
+          vertical: 'middle',
+          wrapText: true
+        };
+      });
+    });
+
+    // 🔒 PROTECT THE WORKSHEET (read-only, no password required to open)
+    worksheet.protect('');  // empty string = no password, but editing is disabled
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `email-records-${new Date().toISOString().split("T")[0]}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showNotification("Excel file downloaded (read‑only protection applied)", "success");
+  } catch (error) {
+    console.error("Error generating Excel:", error);
+    showNotification("Failed to generate Excel file", "error");
+  }
+};
 
   const downloadPdf = async (filename) => {
     setDownloading((prev) => ({ ...prev, [filename]: true }));
@@ -155,152 +429,6 @@ const EmailRecords = () => {
     }
   };
 
-  const downloadExcel = async () => {
-  try {
-    if (emailRecords.length === 0) {
-      showNotification("No records to download", "warning");
-      return;
-    }
-
-    const ExcelJS = await import('exceljs');
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Email Records');
-
-    // Set column widths
-    worksheet.columns = [
-      { header: 'Serial No.', key: 'serialNo', width: 12 },
-      { header: 'Date', key: 'date', width: 14 },
-      { header: 'To Email', key: 'toEmail', width: 35 },
-      { header: 'Place', key: 'place', width: 18 },
-      { header: 'Sent by Post', key: 'sentByPost', width: 14 },
-      { header: 'Description', key: 'description', width: 45 },
-      { header: 'Stamp Received', key: 'stampReceived', width: 18 },
-      { header: 'Stamp Affixed', key: 'stampAffixed', width: 18 },
-      { header: 'Balance Left', key: 'balanceLeft', width: 18 },
-      { header: 'Remarks', key: 'remarks', width: 35 }
-    ];
-
-    // ========== HEADER SECTION (single row) ==========
-    // Set row height for the header
-    worksheet.getRow(1).height = 100;
-    
-    // Merge all columns A through J for the header
-    worksheet.mergeCells('A1:J1');
-    const titleCell = worksheet.getCell('A1');
-    titleCell.value = "K. K. WAGH EDUCATION SOCIETY'S, NASHIK.\nOUTWARD REGISTER";
-    titleCell.font = { bold: true, size: 18 }; // larger font
-    titleCell.alignment = {
-      horizontal: 'center',
-      vertical: 'middle',
-      wrapText: true
-    };
-
-    // Apply borders to the header cell
-    titleCell.border = {
-      top: { style: 'thin' },
-      left: { style: 'thin' },
-      bottom: { style: 'thin' },
-      right: { style: 'thin' }
-    };
-
-    // ========== COLUMN HEADERS (row 2) ==========
-    const headerRow = worksheet.getRow(2);
-    headerRow.values = [
-      'Serial No.',
-      'Date',
-      'To Email',
-      'Place',
-      'Sent by Post',
-      'Description',
-      'Stamp Received',
-      'Stamp Affixed',
-      'Balance Left',
-      'Remarks'
-    ];
-    headerRow.font = { bold: true };
-    headerRow.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-    headerRow.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFF0F0F0' }
-    };
-    headerRow.height = 25;
-
-    // Apply borders to header row cells
-    headerRow.eachCell({ includeEmpty: true }, (cell) => {
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thin' },
-        right: { style: 'thin' }
-      };
-    });
-
-    // ========== DATA ROWS ==========
-    emailRecords.forEach((record, idx) => {
-      const row = worksheet.addRow([
-        record.serial_number || idx + 1,
-        new Date(record.sent_date).toLocaleDateString("en-GB"),
-        record.to_user || "",
-        record.place || "",
-        record.postal_sent ? "Yes" : "No",
-        record.subject || "",
-        record.stamp_received || 0,
-        record.stamp_affixed || 0,
-        record.balance_left || 0,
-        record.remarks || ""
-      ]);
-
-      // Apply borders and text wrapping to each cell in the row
-      row.eachCell({ includeEmpty: true }, (cell) => {
-        cell.border = {
-          top: { style: 'thin' },
-          left: { style: 'thin' },
-          bottom: { style: 'thin' },
-          right: { style: 'thin' }
-        };
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      });
-    });
-
-    // Generate and download file
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `email-records-${new Date().toISOString().split("T")[0]}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showNotification("Excel file downloaded successfully!", "success");
-
-  } catch (error) {
-    console.error("Error generating Excel:", error);
-    showNotification("Failed to generate Excel file", "error");
-  }
-};
-
-  const filteredRecords = sortedRecords.filter((record) => {
-    const matchesSearch =
-      record.from_user?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.to_user?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.subject?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.content?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.subject_hindi?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.content_hindi?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.subject_marathi?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.content_marathi?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.place?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.remarks?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.serial_number?.toString().includes(searchTerm.toLowerCase());
-
-    const matchesDate = dateFilter ? record.sent_date === dateFilter : true;
-    return matchesSearch && matchesDate;
-  });
-
   useEffect(() => {
     const updateScrollWidth = () => {
       if (topScrollRef.current && bottomScrollRef.current) {
@@ -320,16 +448,13 @@ const EmailRecords = () => {
     return sortConfig.direction === "desc" ? <ChevronDown size={16} /> : <ChevronUp size={16} />;
   };
 
-  if (loading) {
-    return (
-      <div className="er-root">
-        <div className="er-loading">
-          <div className="er-spinner" />
-          <p className="er-loading-text">LOADING EMAIL RECORDS...</p>
-        </div>
-      </div>
-    );
-  }
+  const clearAllFilters = () => {
+    setSearchTerm("");
+    setSearchTermRomanized("");
+    setFromDate("");
+    setToDate("");
+    setMarathiSearchEnabled(false);
+  };
 
   return (
     <div className="er-root">
@@ -359,31 +484,71 @@ const EmailRecords = () => {
         </div>
         <div className="er-filters-grid">
           <div className="er-field">
-            <label className="er-label">
-              <Search size={14} strokeWidth={2} />
-              SEARCH RECORDS
-            </label>
-            <input
-              type="text"
-              className="er-input"
-              placeholder="Search by serial no., sender, recipient, subject, content, place, remarks..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            <p className="er-hint">Search across all fields</p>
+            <div className="er-label-row">
+              <label className="er-label">
+                <Search size={14} strokeWidth={2} />
+                SEARCH RECORDS
+              </label>
+              <button
+                className={`er-toggle-btn ${marathiSearchEnabled ? "er-toggle-btn--active" : ""}`}
+                onClick={toggleMarathiSearchMode}
+              >
+                <Type size={13} strokeWidth={2} />
+                {marathiSearchEnabled ? "मराठी MODE ON" : "MARATHI MODE"}
+              </button>
+            </div>
+            <div className="er-input-wrap">
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="er-input"
+                placeholder={marathiSearchEnabled ? "Type in Romanized Marathi (e.g., namaskar)…" : "Search by serial no., sender, recipient, subject, content, place, remarks..."}
+                value={marathiSearchEnabled ? searchTermRomanized : searchTerm}
+                onChange={handleSearchInput}
+              />
+              {isTranslatingSearch && (
+                <span className="er-translating">
+                  <RefreshCw size={11} strokeWidth={2} className="er-spin" />
+                  Transliterating…
+                </span>
+              )}
+            </div>
+            <p className="er-hint">
+              {marathiSearchEnabled
+                ? "Type in Romanized Marathi, it will auto-convert to Devanagari in the search box"
+                : "Search across all fields including translations"}
+            </p>
           </div>
           <div className="er-field">
             <label className="er-label">
               <Calendar size={14} strokeWidth={2} />
-              FILTER BY DATE
+              DATE RANGE
             </label>
-            <input
-              type="date"
-              className="er-input"
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
-            />
-            <p className="er-hint">Show records for a specific date</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <div>
+                <div style={{ fontSize: "0.7rem", marginBottom: "0.25rem", fontFamily: "'DM Mono', monospace", color: "#666" }}>
+                  FROM
+                </div>
+                <input
+                  type="date"
+                  className="er-input"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <div style={{ fontSize: "0.7rem", marginBottom: "0.25rem", fontFamily: "'DM Mono', monospace", color: "#666" }}>
+                  TO
+                </div>
+                <input
+                  type="date"
+                  className="er-input"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                />
+              </div>
+            </div>
+            <p className="er-hint">Filter records between these dates (inclusive)</p>
           </div>
         </div>
 
@@ -396,14 +561,8 @@ const EmailRecords = () => {
             <FileDown size={16} strokeWidth={2} />
             EXPORT TO EXCEL
           </button>
-          {(searchTerm || dateFilter) && (
-            <button
-              className="er-btn er-btn-outline"
-              onClick={() => {
-                setSearchTerm("");
-                setDateFilter("");
-              }}
-            >
+          {(searchTerm || searchTermRomanized || fromDate || toDate) && (
+            <button className="er-btn er-btn-outline" onClick={clearAllFilters}>
               <Filter size={16} strokeWidth={2} />
               CLEAR FILTERS
             </button>
@@ -413,10 +572,22 @@ const EmailRecords = () => {
         <div className="er-stats-badge">
           <Database size={14} strokeWidth={2} />
           {filteredRecords.length} RECORD{filteredRecords.length !== 1 ? "S" : ""} FOUND
+          {isRecentOnlyMode && emailRecords.length > RECENT_LIMIT && (
+            <span style={{ marginLeft: "0.5rem", fontSize: "0.65rem", color: "#16a34a" }}>
+              (showing {RECENT_LIMIT} most recent)
+            </span>
+          )}
+          {(fromDate || toDate) && (
+            <span style={{ marginLeft: "0.5rem", fontSize: "0.65rem" }}>
+              {fromDate && toDate && ` | ${fromDate} → ${toDate}`}
+              {fromDate && !toDate && ` | from ${fromDate}`}
+              {!fromDate && toDate && ` | until ${toDate}`}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Table – Restored to original */}
+      {/* Table */}
       {filteredRecords.length === 0 ? (
         <div className="er-section er-empty-state">
           <div className="er-empty-icon">
@@ -424,18 +595,12 @@ const EmailRecords = () => {
           </div>
           <h3 className="er-empty-title">No Email Records Found</h3>
           <p className="er-empty-text">
-            {searchTerm || dateFilter
+            {searchTerm || fromDate || toDate
               ? "Try adjusting your search or filter criteria"
               : "No emails have been composed yet. Start by creating your first email!"}
           </p>
-          {(searchTerm || dateFilter) && (
-            <button
-              className="er-btn er-btn-black"
-              onClick={() => {
-                setSearchTerm("");
-                setDateFilter("");
-              }}
-            >
+          {(searchTerm || searchTermRomanized || fromDate || toDate) && (
+            <button className="er-btn er-btn-black" onClick={clearAllFilters}>
               <Filter size={16} strokeWidth={2} />
               CLEAR FILTERS
             </button>
@@ -467,40 +632,28 @@ const EmailRecords = () => {
             <table className="table" style={{ minWidth: "1400px", width: "100%" }}>
               <thead>
                 <tr>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "100px" }}
-                    onClick={() => handleSort("serial_number")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "100px" }} onClick={() => handleSort("serial_number")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <Database size={16} />
                       Serial No.
                       {getSortIcon("serial_number")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "120px" }}
-                    onClick={() => handleSort("sent_date")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "120px" }} onClick={() => handleSort("sent_date")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <Calendar size={16} />
                       Date
                       {getSortIcon("sent_date")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "300px" }}
-                    onClick={() => handleSort("to_user")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "300px" }} onClick={() => handleSort("to_user")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <Mail size={16} />
                       To Email
                       {getSortIcon("to_user")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "150px" }}
-                    onClick={() => handleSort("place")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "150px" }} onClick={() => handleSort("place")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <MapPin size={16} />
                       Place
@@ -513,40 +666,28 @@ const EmailRecords = () => {
                       Sent by Post
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "350px" }}
-                    onClick={() => handleSort("subject")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "350px" }} onClick={() => handleSort("subject")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <FileText size={16} />
                       Description
                       {getSortIcon("subject")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "140px" }}
-                    onClick={() => handleSort("stamp_received")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "140px" }} onClick={() => handleSort("stamp_received")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <DollarSign size={16} />
                       Stamp Received
                       {getSortIcon("stamp_received")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "140px" }}
-                    onClick={() => handleSort("stamp_affixed")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "140px" }} onClick={() => handleSort("stamp_affixed")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <DollarSign size={16} />
                       Stamp Affixed
                       {getSortIcon("stamp_affixed")}
                     </div>
                   </th>
-                  <th
-                    style={{ cursor: "pointer", minWidth: "140px" }}
-                    onClick={() => handleSort("balance_left")}
-                  >
+                  <th style={{ cursor: "pointer", minWidth: "140px" }} onClick={() => handleSort("balance_left")}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <DollarSign size={16} />
                       Balance Left
@@ -1015,6 +1156,7 @@ const EmailRecords = () => {
       )}
 
       <style>{`
+        /* All your existing CSS stays exactly as it was – no changes needed */
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800;900&family=DM+Mono:wght@300;400;500&display=swap');
 
         *,
@@ -1113,6 +1255,17 @@ const EmailRecords = () => {
         .er-field {
           margin-bottom: 0;
         }
+        .er-label-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 0.5rem;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+        .er-label-row .er-label {
+          margin-bottom: 0;
+        }
         .er-label {
           display: flex;
           align-items: center;
@@ -1121,7 +1274,6 @@ const EmailRecords = () => {
           font-weight: 500;
           letter-spacing: 0.12em;
           color: #000000;
-          margin-bottom: 0.5rem;
           font-family: 'DM Mono', monospace;
         }
         .er-input {
@@ -1143,12 +1295,56 @@ const EmailRecords = () => {
           color: #aaa;
           font-size: 0.825rem;
         }
+        .er-input-wrap {
+          position: relative;
+        }
         .er-hint {
           font-size: 0.7rem;
           color: #666;
           margin: 0.5rem 0 0;
           letter-spacing: 0.03em;
           font-family: 'DM Mono', monospace;
+        }
+
+        /* Toggle Button for Marathi Mode */
+        .er-toggle-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          padding: 0.4rem 0.875rem;
+          background: #000000;
+          border: 2px solid #000000;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 0.7rem;
+          font-family: 'DM Mono', monospace;
+          color: #ffffff;
+          letter-spacing: 0.06em;
+          transition: all 0.15s;
+        }
+        .er-toggle-btn--active {
+          background: #000000;
+          color: #fff;
+          border-color: #000000;
+        }
+
+        /* Translating indicator */
+        .er-translating {
+          display: flex;
+          align-items: center;
+          gap: 0.3rem;
+          font-size: 0.68rem;
+          color: #888;
+          margin-top: 0.35rem;
+          letter-spacing: 0.04em;
+          font-family: 'DM Mono', monospace;
+        }
+        .er-spin {
+          animation: er-spin 1s linear infinite;
+        }
+        @keyframes er-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
         }
 
         /* Action Bar */
@@ -1317,38 +1513,20 @@ const EmailRecords = () => {
           justify-content: center;
         }
 
-        /* Loading */
+        /* Loading (removed, kept only for potential future use) */
         .er-loading {
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          min-height: 300px;
-          gap: 1rem;
-        }
-        .er-spinner {
-          width: 36px;
-          height: 36px;
-          border: 2px solid #e5e5e5;
-          border-top-color: #000000;
-          border-radius: 50%;
-          animation: er-spin 0.8s linear infinite;
-        }
-        .er-loading-text {
-          font-family: 'DM Mono', monospace;
-          font-size: 0.875rem;
-          letter-spacing: 0.05em;
-          color: #000000;
+          min-height: 400px;
+          gap: 1.5rem;
+          background: rgba(255, 255, 255, 0.6);
+          backdrop-filter: blur(8px);
+          border-radius: 24px;
+          margin: 2rem 0;
         }
 
-        @keyframes er-spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
         @keyframes erOverlayIn {
           from {
             opacity: 0;
@@ -1455,6 +1633,11 @@ const EmailRecords = () => {
           }
           .er-section {
             padding: 1.25rem;
+          }
+          .er-label-row {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 0.5rem;
           }
         }
       `}</style>
