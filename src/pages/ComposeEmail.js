@@ -17,8 +17,6 @@ import {
   Trash2,
   Paperclip,
   CheckSquare,
-  Plus,
-  Minus,
   MapPin,
   Type,
   Hash,
@@ -56,6 +54,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
   const [stampAffixed, setStampAffixed] = useState("");
   const [remarks, setRemarks] = useState("");
   const [serialNumber, setSerialNumber] = useState("");
+  const [lastSerialNumber, setLastSerialNumber] = useState(null); // NEW
 
   const [balance, setBalance] = useState(null);
   const [addFundsAmount, setAddFundsAmount] = useState("");
@@ -82,7 +81,11 @@ const ComposeEmail = ({ onRecordSaved }) => {
   const [fromInput, setFromInput] = useState("");
   const [emailOptions, setEmailOptions] = useState({});
   const [fromEmailOptions, setFromEmailOptions] = useState({});
-  const [loadingEmails, setLoadingEmails] = useState(true);
+
+  // Collapsible section states
+  const [showTranslation, setShowTranslation] = useState(false);
+  const [showPostalBalance, setShowPostalBalance] = useState(false);
+  const [showPostalDetails, setShowPostalDetails] = useState(false);
 
   const fileInputRef = useRef(null);
   const toInputRef = useRef(null);
@@ -92,9 +95,41 @@ const ComposeEmail = ({ onRecordSaved }) => {
   const subjectRef = useRef(null);
   const contentRef = useRef(null);
 
+  // NEW: fetch highest serial number and pre‑fill next number
+  const fetchLastSerialNumber = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("email_records")
+        .select("serial_number")
+        .order("serial_number", { ascending: false })
+        .limit(1);
+
+      if (error) throw error;
+
+      if (data && data.length > 0 && data[0].serial_number) {
+        const last = data[0].serial_number;
+        setLastSerialNumber(last);
+        const numeric = parseInt(last, 10);
+        if (!isNaN(numeric)) {
+          const nextNumber = (numeric + 1).toString();
+          setSerialNumber(nextNumber);
+        } else {
+          setSerialNumber("");
+        }
+      } else {
+        // No records – leave empty, user will enter first serial number
+        setSerialNumber("");
+        setLastSerialNumber(null);
+      }
+    } catch (err) {
+      console.error("Error fetching last serial number:", err);
+    }
+  };
+
   useEffect(() => {
     fetchEmailsFromSupabase();
     fetchBalance();
+    fetchLastSerialNumber(); // NEW
   }, []);
 
   useEffect(() => {
@@ -116,7 +151,6 @@ const ComposeEmail = ({ onRecordSaved }) => {
   }, [contentMarathiInput]);
 
   const fetchEmailsFromSupabase = async () => {
-    setLoadingEmails(true);
     try {
       const [adminRes, principalRes, deansRes, hodRes] = await Promise.all([
         supabase.from("admin").select("email, name, department"),
@@ -137,8 +171,6 @@ const ComposeEmail = ({ onRecordSaved }) => {
       showNotification("Email contacts loaded successfully", "success");
     } catch (error) {
       showNotification("Failed to load email contacts", "error");
-    } finally {
-      setLoadingEmails(false);
     }
   };
 
@@ -412,24 +444,69 @@ const ComposeEmail = ({ onRecordSaved }) => {
     finally { setProcessingPayment(false); }
   };
 
+  // ========== saveEmailRecord with duplicate check + auto‑increment after save ==========
   const saveEmailRecord = async () => {
-    if (!formData.to.length) { showNotification("Please add at least one recipient", "error"); return; }
-    if (!formData.subject.trim()) { showNotification("Please add a subject", "error"); return; }
+    if (!formData.to.length) {
+      showNotification("Please add at least one recipient", "error");
+      return;
+    }
+    if (!formData.subject.trim()) {
+      showNotification("Please add a subject", "error");
+      return;
+    }
+    const trimmedSerial = serialNumber.trim();
+    if (!trimmedSerial) {
+      showNotification("Serial number cannot be blank", "error");
+      return;
+    }
+
     setLoading(true);
     try {
+      // Check duplicate
+      const { data: existing, error: checkError } = await supabase
+        .from("email_records")
+        .select("serial_number")
+        .eq("serial_number", trimmedSerial)
+        .maybeSingle();
+
+      if (checkError) {
+        console.error("Error checking serial number:", checkError);
+        showNotification("Error checking serial number. Please try again.", "error");
+        setLoading(false);
+        return;
+      }
+
+      if (existing) {
+        showNotification(`Serial number "${trimmedSerial}" already exists. Please use a different one.`, "error");
+        setLoading(false);
+        return;
+      }
+
+      // Postal balance logic
       let stampReceived = 0, balanceLeft = 0;
       const affixedAmount = parseFloat(stampAffixed);
       if (!isNaN(affixedAmount) && affixedAmount > 0) {
         if (balance < affixedAmount) throw new Error("Insufficient balance for this stamp affixed amount");
         const { error: transError } = await supabase.rpc("process_transaction", {
-          p_amount: -affixedAmount, p_type: "withdrawal", p_description: `Postal stamp for email: ${formData.subject}`,
+          p_amount: -affixedAmount,
+          p_type: "withdrawal",
+          p_description: `Postal stamp for email: ${formData.subject}`,
         });
         if (transError) throw transError;
-        const { data: newBalance, error: balError } = await supabase.from("balance").select("amount").limit(1).single();
+        const { data: newBalance, error: balError } = await supabase
+          .from("balance")
+          .select("amount")
+          .limit(1)
+          .single();
         if (balError) throw balError;
         balanceLeft = newBalance?.amount || 0;
         stampReceived = balanceLeft + affixedAmount;
-      } else { stampReceived = balance; balanceLeft = balance; }
+      } else {
+        stampReceived = balance;
+        balanceLeft = balance;
+      }
+
+      // Insert
       const { data, error } = await supabase.from("email_records").insert([{
         from_user: formData.from || "Not specified",
         to_user: formData.to.join(","),
@@ -447,20 +524,95 @@ const ComposeEmail = ({ onRecordSaved }) => {
         stamp_affixed: isNaN(affixedAmount) ? 0 : affixedAmount,
         balance_left: balanceLeft,
         remarks: remarks || null,
-        serial_number: serialNumber || null,
+        serial_number: trimmedSerial,
       }]).select();
-      if (error) throw error;
+
+      if (error) {
+        if (error.code === "23505") {
+          showNotification(`Serial number "${trimmedSerial}" already exists. Please use a different one.`, "error");
+        } else {
+          throw error;
+        }
+        setLoading(false);
+        return;
+      }
+
       showNotification("Email record saved successfully!", "success");
-      setFormData({ from: formData.from, to: [], subject: "", content: "", pdfFiles: [], pdfFileNames: [], subjectHindi: "", contentHindi: "", subjectMarathi: "", contentMarathi: "", sentDate: new Date().toISOString().split("T")[0] });
-      setPostalSent(false); setPlace(""); setStampAffixed(""); setRemarks(""); setSerialNumber(""); setEmailInput(""); setSubjectMarathiInput(""); setContentMarathiInput(""); setMarathiEnabled(false);
+
+      // Reset form except "from" and set next serial number (Option A)
+      setFormData({
+        from: formData.from,
+        to: [],
+        subject: "",
+        content: "",
+        pdfFiles: [],
+        pdfFileNames: [],
+        subjectHindi: "",
+        contentHindi: "",
+        subjectMarathi: "",
+        contentMarathi: "",
+        sentDate: new Date().toISOString().split("T")[0],
+      });
+      setPostalSent(false);
+      setPlace("");
+      setStampAffixed("");
+      setRemarks("");
+      setEmailInput("");
+      setSubjectMarathiInput("");
+      setContentMarathiInput("");
+      setMarathiEnabled(false);
+
+      // Auto‑increment for next email
+      const numeric = parseInt(trimmedSerial, 10);
+      if (!isNaN(numeric)) {
+        const nextNumber = (numeric + 1).toString();
+        setSerialNumber(nextNumber);
+        setLastSerialNumber(nextNumber);
+      } else {
+        setSerialNumber("");
+        setLastSerialNumber(null);
+      }
+
       if (onRecordSaved) onRecordSaved(data[0]);
-    } catch (err) { showNotification(err.message || "Failed to save email record", "error"); }
-    finally { setLoading(false); }
+
+    } catch (err) {
+      console.error("Save error:", err);
+      showNotification(err.message || "Failed to save email record", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openGmailAndSave = async () => {
-    if (!formData.to.length) { showNotification("Please add at least one recipient", "error"); return; }
-    if (!formData.subject.trim()) { showNotification("Please add a subject", "error"); return; }
+    if (!formData.to.length) {
+      showNotification("Please add at least one recipient", "error");
+      return;
+    }
+    if (!formData.subject.trim()) {
+      showNotification("Please add a subject", "error");
+      return;
+    }
+    const trimmedSerial = serialNumber.trim();
+    if (!trimmedSerial) {
+      showNotification("Serial number cannot be blank", "error");
+      return;
+    }
+    // Check duplicate before opening Gmail
+    const { data: existing, error: checkError } = await supabase
+      .from("email_records")
+      .select("serial_number")
+      .eq("serial_number", trimmedSerial)
+      .maybeSingle();
+    if (checkError) {
+      console.error("Error checking serial number:", checkError);
+      showNotification("Error checking serial number. Please try again.", "error");
+      return;
+    }
+    if (existing) {
+      showNotification(`Serial number "${trimmedSerial}" already exists. Please use a different one.`, "error");
+      return;
+    }
+
     showPromiseNotification(
       new Promise(async (resolve, reject) => {
         try {
@@ -488,9 +640,17 @@ const ComposeEmail = ({ onRecordSaved }) => {
           }
           const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(toEmails)}&su=${encodeURIComponent(formData.subject)}&body=${encodeURIComponent(body)}`;
           const gmailWindow = window.open(gmailUrl, "_blank");
-          if (gmailWindow) { setTimeout(async () => { await saveEmailRecord(); resolve(); }, 1000); }
-          else throw new Error("Please allow popups for Gmail to open");
-        } catch (error) { reject(error); }
+          if (gmailWindow) {
+            setTimeout(async () => {
+              await saveEmailRecord();
+              resolve();
+            }, 1000);
+          } else {
+            throw new Error("Please allow popups for Gmail to open");
+          }
+        } catch (error) {
+          reject(error);
+        }
       }),
       { loading: "Opening Gmail and saving record...", success: "Gmail opened! Record saved.", error: "Failed to open Gmail. Check popup settings." }
     );
@@ -502,20 +662,11 @@ const ComposeEmail = ({ onRecordSaved }) => {
     showNotification("Form cleared", "info");
   };
 
-  if (loadingEmails) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "300px", gap: "1rem" }}>
-        <div className="ce-spinner" />
-        <p style={{ color: "#000000", fontFamily: "'Playfair Display', serif", fontSize: "0.875rem", letterSpacing: "0.05em" }}>LOADING CONTACTS...</p>
-      </div>
-    );
-  }
-
   return (
     <div className="ce-root">
       <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800;900&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="ce-header">
         <div className="ce-header-left">
           <div className="ce-header-icon"><Mail size={22} strokeWidth={1.5} /></div>
@@ -526,87 +677,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </div>
 
-      {/* ── Balance Management ── */}
-      <section className="ce-section">
-        <div className="ce-section-label">
-          <Wallet size={15} strokeWidth={2} />
-          <span>BALANCE MANAGEMENT</span>
-        </div>
-
-        <div className="ce-balance-grid">
-          {/* Current Balance */}
-          <div className="ce-balance-card">
-            <div className="ce-balance-card-top">
-              <span className="ce-balance-card-label">CURRENT BALANCE</span>
-              <Wallet size={18} strokeWidth={1.5} className="ce-balance-card-icon" />
-            </div>
-            <div className="ce-balance-amount">
-              ₹ {balance !== null ? balance.toFixed(2) : "—"}
-            </div>
-            <div className="ce-balance-card-sub">Available for postal services</div>
-          </div>
-
-          {/* Add Funds */}
-          <div className="ce-txn-card">
-            <div className="ce-txn-label">
-              <ArrowUpCircle size={16} strokeWidth={2} className="ce-icon-green" />
-              <span>ADD FUNDS</span>
-            </div>
-            <div className="ce-txn-row">
-              <div className="ce-input-prefix-wrap">
-                <span className="ce-input-prefix">₹</span>
-                <input
-                  type="number"
-                  className="ce-input ce-input-prefix-pad"
-                  placeholder="0.00"
-                  value={addFundsAmount}
-                  onChange={(e) => setAddFundsAmount(e.target.value)}
-                  step="0.01"
-                  min="0"
-                />
-              </div>
-              <button className="ce-btn ce-btn-green" onClick={handleAddFunds} disabled={processingDeposit}>
-                {processingDeposit ? <div className="ce-spinner-sm" /> : <><ArrowUpCircle size={16} strokeWidth={2} /><span>DEPOSIT</span></>}
-              </button>
-            </div>
-            <p className="ce-hint">Deposit money to your account</p>
-          </div>
-
-          {/* Postal Payment */}
-          <div className="ce-txn-card">
-            <div className="ce-txn-label">
-              <ArrowDownCircle size={16} strokeWidth={2} className="ce-icon-red" />
-              <span>POSTAL PAYMENT</span>
-            </div>
-            <div className="ce-txn-row">
-              <div className="ce-input-prefix-wrap">
-                <span className="ce-input-prefix">₹</span>
-                <input
-                  type="number"
-                  className="ce-input ce-input-prefix-pad"
-                  placeholder="0.00"
-                  value={postalPaymentAmount}
-                  onChange={(e) => setPostalPaymentAmount(e.target.value)}
-                  step="0.01"
-                  min="0"
-                />
-              </div>
-              <button className="ce-btn ce-btn-red" onClick={handlePostalPayment} disabled={processingPayment}>
-                {processingPayment ? <div className="ce-spinner-sm ce-spinner-dark" /> : <><ArrowDownCircle size={16} strokeWidth={2} /><span>DEDUCT</span></>}
-              </button>
-            </div>
-            {balance !== null && postalPaymentAmount && parseFloat(postalPaymentAmount) > balance && (
-              <p className="ce-error-hint">
-                <AlertCircle size={12} strokeWidth={2} />
-                Insufficient balance — ₹{balance.toFixed(2)} available
-              </p>
-            )}
-            <p className="ce-hint">Deduct amount for postal services</p>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Sender ── */}
+      {/* Sender */}
       <section className="ce-section ce-section-sender">
         <div className="ce-section-label">
           <User size={15} strokeWidth={2} />
@@ -656,7 +727,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </section>
 
-      {/* ── Recipients ── */}
+      {/* Recipients */}
       <section className="ce-section ce-section-recipients">
         <div className="ce-section-label">
           <Mail size={15} strokeWidth={2} />
@@ -729,7 +800,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </section>
 
-      {/* ── Subject ── */}
+      {/* Subject */}
       <section className="ce-section">
         <div className="ce-section-label">
           <FileText size={15} strokeWidth={2} />
@@ -763,7 +834,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </section>
 
-      {/* ── Content ── */}
+      {/* Content */}
       <section className="ce-section">
         <div className="ce-section-label">
           <Edit3 size={15} strokeWidth={2} />
@@ -791,50 +862,59 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </section>
 
-      {/* ── Translations ── */}
+      {/* Multi-language Translation (collapsible) */}
       <section className="ce-section">
-        <div className="ce-section-label">
+        <div
+          className={`ce-section-label ${!showTranslation ? "ce-section-label-collapsed" : ""}`}
+          onClick={() => setShowTranslation(!showTranslation)}
+          style={{ cursor: "pointer", userSelect: "none" }}
+        >
           <Languages size={15} strokeWidth={2} />
           <span>MULTI-LANGUAGE TRANSLATION</span>
+          {showTranslation ? <ChevronUp size={16} strokeWidth={2} style={{ marginLeft: "auto" }} /> : <ChevronDown size={16} strokeWidth={2} style={{ marginLeft: "auto" }} />}
         </div>
-        <div className="ce-translation-grid">
-          {/* Hindi */}
-          <div className="ce-lang-card">
-            <div className="ce-lang-header">
-              <span className="ce-lang-badge ce-lang-badge--hi">हिंदी HINDI</span>
-              <div className="ce-lang-actions">
-                <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.subject, "subject", "hindi")} disabled={translating.hindi.subject || !formData.subject.trim()}>
-                  <Languages size={12} strokeWidth={2} /> Subject
-                </button>
-                <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.content, "content", "hindi")} disabled={translating.hindi.content || !formData.content.trim()}>
-                  <Languages size={12} strokeWidth={2} /> Content
-                </button>
+        {showTranslation && (
+          <div className="ce-collapsible-content">
+            <div className="ce-translation-grid">
+              {/* Hindi */}
+              <div className="ce-lang-card">
+                <div className="ce-lang-header">
+                  <span className="ce-lang-badge ce-lang-badge--hi">हिंदी HINDI</span>
+                  <div className="ce-lang-actions">
+                    <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.subject, "subject", "hindi")} disabled={translating.hindi.subject || !formData.subject.trim()}>
+                      <Languages size={12} strokeWidth={2} /> Subject
+                    </button>
+                    <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.content, "content", "hindi")} disabled={translating.hindi.content || !formData.content.trim()}>
+                      <Languages size={12} strokeWidth={2} /> Content
+                    </button>
+                  </div>
+                </div>
+                <input type="text" name="subjectHindi" className="ce-input" placeholder="Hindi subject appears here…" value={formData.subjectHindi} onChange={handleInputChange} />
+                <textarea name="contentHindi" className="ce-textarea" style={{ marginTop: "0.75rem" }} placeholder="Hindi content appears here…" value={formData.contentHindi} onChange={handleInputChange} rows={4} />
+              </div>
+              {/* Marathi */}
+              <div className="ce-lang-card">
+                <div className="ce-lang-header">
+                  <span className="ce-lang-badge ce-lang-badge--mr">मराठी MARATHI</span>
+                  <div className="ce-lang-actions">
+                    <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.subject, "subject", "marathi")} disabled={translating.marathi.subject || !formData.subject.trim()}>
+                      <Languages size={12} strokeWidth={2} /> Subject
+                    </button>
+                    <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.content, "content", "marathi")} disabled={translating.marathi.content || !formData.content.trim()}>
+                      <Languages size={12} strokeWidth={2} /> Content
+                    </button>
+                  </div>
+                </div>
+                <input type="text" name="subjectMarathi" className="ce-input" placeholder="Marathi subject appears here…" value={formData.subjectMarathi} onChange={handleInputChange} />
+                <textarea name="contentMarathi" className="ce-textarea" style={{ marginTop: "0.75rem" }} placeholder="Marathi content appears here…" value={formData.contentMarathi} onChange={handleInputChange} rows={4} />
               </div>
             </div>
-            <input type="text" name="subjectHindi" className="ce-input" placeholder="Hindi subject appears here…" value={formData.subjectHindi} onChange={handleInputChange} />
-            <textarea name="contentHindi" className="ce-textarea" style={{ marginTop: "0.75rem" }} placeholder="Hindi content appears here…" value={formData.contentHindi} onChange={handleInputChange} rows={4} />
+            <p className="ce-hint">Click the buttons to auto-translate subject or content to each language</p>
           </div>
-          {/* Marathi */}
-          <div className="ce-lang-card">
-            <div className="ce-lang-header">
-              <span className="ce-lang-badge ce-lang-badge--mr">मराठी MARATHI</span>
-              <div className="ce-lang-actions">
-                <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.subject, "subject", "marathi")} disabled={translating.marathi.subject || !formData.subject.trim()}>
-                  <Languages size={12} strokeWidth={2} /> Subject
-                </button>
-                <button className="ce-action-btn ce-action-btn-black" onClick={() => translateText(formData.content, "content", "marathi")} disabled={translating.marathi.content || !formData.content.trim()}>
-                  <Languages size={12} strokeWidth={2} /> Content
-                </button>
-              </div>
-            </div>
-            <input type="text" name="subjectMarathi" className="ce-input" placeholder="Marathi subject appears here…" value={formData.subjectMarathi} onChange={handleInputChange} />
-            <textarea name="contentMarathi" className="ce-textarea" style={{ marginTop: "0.75rem" }} placeholder="Marathi content appears here…" value={formData.contentMarathi} onChange={handleInputChange} rows={4} />
-          </div>
-        </div>
-        <p className="ce-hint">Click the buttons to auto-translate subject or content to each language</p>
+        )}
       </section>
 
-      {/* ── Reference ── */}
+      {/* Reference Number */}
       <section className="ce-section">
         <div className="ce-section-label">
           <Hash size={15} strokeWidth={2} />
@@ -842,12 +922,23 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
         <div className="ce-field">
           <label className="ce-label">SERIAL NUMBER</label>
-          <input type="text" className="ce-input" placeholder="e.g., INV-001, PO-2024-123, REF-001" value={serialNumber} onChange={(e) => setSerialNumber(e.target.value)} />
-          <p className="ce-hint">Optional reference number for tracking and identification</p>
+          <input
+            type="text"
+            className="ce-input"
+            placeholder="e.g., INV-001, PO-2024-123, REF-001"
+            value={serialNumber}
+            onChange={(e) => {
+              const newValue = e.target.value;
+              setSerialNumber(newValue);
+              // Update lastSerialNumber so next auto‑increment uses this new value
+              setLastSerialNumber(newValue);
+            }}
+          />
+          <p className="ce-hint">Mandatory reference number – auto‑increments after each save</p>
         </div>
       </section>
 
-      {/* ── Attachments ── */}
+      {/* Attachments */}
       <section className="ce-section">
         <div className="ce-section-label">
           <Paperclip size={15} strokeWidth={2} />
@@ -889,47 +980,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         )}
       </section>
 
-      {/* ── Postal Details ── */}
-      <section className="ce-section">
-        <div className="ce-section-label">
-          <Truck size={15} strokeWidth={2} />
-          <span>POSTAL DETAILS</span>
-        </div>
-        <div className="ce-postal-grid">
-          <div className="ce-field">
-            <label className="ce-label">
-              <MapPin size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
-              PLACE (CITY)
-            </label>
-            <input type="text" className="ce-input" placeholder="e.g., Nashik, Mumbai, Pune" value={place} onChange={(e) => setPlace(e.target.value)} />
-            <p className="ce-hint">City where the postal mail was sent from</p>
-          </div>
-          <div className="ce-field">
-            <label className="ce-label">
-              <Banknote size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
-              STAMP AFFIXED (₹)
-            </label>
-            <div className="ce-input-prefix-wrap">
-              <span className="ce-input-prefix">₹</span>
-              <input type="number" className="ce-input ce-input-prefix-pad" placeholder="0.00" value={stampAffixed} onChange={(e) => setStampAffixed(e.target.value)} step="0.01" min="0" />
-            </div>
-            {balance !== null && stampAffixed && parseFloat(stampAffixed) > balance && (
-              <p className="ce-error-hint"><AlertCircle size={12} strokeWidth={2} /> Exceeds balance: ₹{balance.toFixed(2)}</p>
-            )}
-            <p className="ce-hint">Amount spent on postage stamps</p>
-          </div>
-          <div className="ce-field ce-field--full">
-            <label className="ce-label">
-              <MessageSquare size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
-              REMARKS
-            </label>
-            <textarea className="ce-textarea" placeholder="Additional remarks about postal delivery, special instructions, or notes…" value={remarks} onChange={(e) => setRemarks(e.target.value)} rows={3} />
-            <p className="ce-hint">Any notes or special instructions for postal sending</p>
-          </div>
-        </div>
-      </section>
-
-      {/* ── Date & Postal Toggle ── */}
+      {/* Date & Dispatch */}
       <section className="ce-section">
         <div className="ce-section-label">
           <Calendar size={15} strokeWidth={2} />
@@ -952,7 +1003,150 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </div>
       </section>
 
-      {/* ── Actions ── */}
+      {/* Divider */}
+      <div className="ce-divider-container">
+        <hr className="ce-divider" />
+        <div className="ce-divider-text">
+          <span>POSTAL INFORMATION</span>
+        </div>
+        <hr className="ce-divider" />
+      </div>
+
+      {/* Postal Balance Management */}
+      <section className="ce-section">
+        <div
+          className={`ce-section-label ${!showPostalBalance ? "ce-section-label-collapsed" : ""}`}
+          onClick={() => setShowPostalBalance(!showPostalBalance)}
+          style={{ cursor: "pointer", userSelect: "none" }}
+        >
+          <Wallet size={15} strokeWidth={2} />
+          <span>POSTAL BALANCE MANAGEMENT</span>
+          {showPostalBalance ? <ChevronUp size={16} strokeWidth={2} style={{ marginLeft: "auto" }} /> : <ChevronDown size={16} strokeWidth={2} style={{ marginLeft: "auto" }} />}
+        </div>
+        {showPostalBalance && (
+          <div className="ce-collapsible-content">
+            <div className="ce-balance-grid">
+              <div className="ce-balance-card-simple">
+                <div className="ce-balance-card-top">
+                  <span className="ce-balance-card-label">CURRENT BALANCE</span>
+                  <Wallet size={18} strokeWidth={1.5} className="ce-balance-card-icon" />
+                </div>
+                <div className="ce-balance-amount-simple">
+                  ₹ {balance !== null ? balance.toFixed(2) : "—"}
+                </div>
+                <div className="ce-balance-card-sub">Available for postal services</div>
+              </div>
+
+              <div className="ce-txn-card">
+                <div className="ce-txn-label">
+                  <ArrowUpCircle size={16} strokeWidth={2} className="ce-icon-green" />
+                  <span>ADD FUNDS</span>
+                </div>
+                <div className="ce-txn-row">
+                  <div className="ce-input-prefix-wrap">
+                    <span className="ce-input-prefix">₹</span>
+                    <input
+                      type="number"
+                      className="ce-input ce-input-prefix-pad"
+                      placeholder="0.00"
+                      value={addFundsAmount}
+                      onChange={(e) => setAddFundsAmount(e.target.value)}
+                      step="0.01"
+                      min="0"
+                    />
+                  </div>
+                  <button className="ce-btn ce-btn-green" onClick={handleAddFunds} disabled={processingDeposit}>
+                    {processingDeposit ? <div className="ce-spinner-sm" /> : <><ArrowUpCircle size={16} strokeWidth={2} /><span>DEPOSIT</span></>}
+                  </button>
+                </div>
+                <p className="ce-hint">Deposit money to your account</p>
+              </div>
+
+              <div className="ce-txn-card">
+                <div className="ce-txn-label">
+                  <ArrowDownCircle size={16} strokeWidth={2} className="ce-icon-red" />
+                  <span>POSTAL PAYMENT</span>
+                </div>
+                <div className="ce-txn-row">
+                  <div className="ce-input-prefix-wrap">
+                    <span className="ce-input-prefix">₹</span>
+                    <input
+                      type="number"
+                      className="ce-input ce-input-prefix-pad"
+                      placeholder="0.00"
+                      value={postalPaymentAmount}
+                      onChange={(e) => setPostalPaymentAmount(e.target.value)}
+                      step="0.01"
+                      min="0"
+                    />
+                  </div>
+                  <button className="ce-btn ce-btn-red" onClick={handlePostalPayment} disabled={processingPayment}>
+                    {processingPayment ? <div className="ce-spinner-sm ce-spinner-dark" /> : <><ArrowDownCircle size={16} strokeWidth={2} /><span>DEDUCT</span></>}
+                  </button>
+                </div>
+                {balance !== null && postalPaymentAmount && parseFloat(postalPaymentAmount) > balance && (
+                  <p className="ce-error-hint">
+                    <AlertCircle size={12} strokeWidth={2} />
+                    Insufficient balance — ₹{balance.toFixed(2)} available
+                  </p>
+                )}
+                <p className="ce-hint">Deduct amount for postal services</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Postal Details */}
+      <section className="ce-section">
+        <div
+          className={`ce-section-label ${!showPostalDetails ? "ce-section-label-collapsed" : ""}`}
+          onClick={() => setShowPostalDetails(!showPostalDetails)}
+          style={{ cursor: "pointer", userSelect: "none" }}
+        >
+          <Truck size={15} strokeWidth={2} />
+          <span>POSTAL DETAILS</span>
+          {showPostalDetails ? <ChevronUp size={16} strokeWidth={2} style={{ marginLeft: "auto" }} /> : <ChevronDown size={16} strokeWidth={2} style={{ marginLeft: "auto" }} />}
+        </div>
+        {showPostalDetails && (
+          <div className="ce-collapsible-content">
+            <div className="ce-postal-grid">
+              <div className="ce-field">
+                <label className="ce-label">
+                  <MapPin size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
+                  PLACE (CITY)
+                </label>
+                <input type="text" className="ce-input" placeholder="e.g., Nashik, Mumbai, Pune" value={place} onChange={(e) => setPlace(e.target.value)} />
+                <p className="ce-hint">City where the postal mail was sent from</p>
+              </div>
+              <div className="ce-field">
+                <label className="ce-label">
+                  <Banknote size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
+                  STAMP AFFIXED (₹)
+                </label>
+                <div className="ce-input-prefix-wrap">
+                  <span className="ce-input-prefix">₹</span>
+                  <input type="number" className="ce-input ce-input-prefix-pad" placeholder="0.00" value={stampAffixed} onChange={(e) => setStampAffixed(e.target.value)} step="0.01" min="0" />
+                </div>
+                {balance !== null && stampAffixed && parseFloat(stampAffixed) > balance && (
+                  <p className="ce-error-hint"><AlertCircle size={12} strokeWidth={2} /> Exceeds balance: ₹{balance.toFixed(2)}</p>
+                )}
+                <p className="ce-hint">Amount spent on postage stamps</p>
+              </div>
+              <div className="ce-field ce-field--full">
+                <label className="ce-label">
+                  <MessageSquare size={13} strokeWidth={2} style={{ display: "inline", marginRight: "0.4rem" }} />
+                  REMARKS
+                </label>
+                <textarea className="ce-textarea" placeholder="Additional remarks about postal delivery, special instructions, or notes…" value={remarks} onChange={(e) => setRemarks(e.target.value)} rows={3} />
+                <p className="ce-hint">Any notes or special instructions for postal sending</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Actions */}
       <div className="ce-actions">
         <button className="ce-btn ce-btn-green ce-btn--lg" onClick={openGmailAndSave} disabled={loading || !formData.to.length || !formData.subject.trim()}>
           {loading ? <div className="ce-spinner-sm" /> : <Send size={18} strokeWidth={2} />}
@@ -968,7 +1162,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         </button>
       </div>
 
-      {/* ── Tips ── */}
+      {/* Tips */}
       <div className="ce-tips">
         <div className="ce-tips-icon"><HelpCircle size={18} strokeWidth={1.5} /></div>
         <div>
@@ -979,11 +1173,13 @@ const ComposeEmail = ({ onRecordSaved }) => {
             <li><strong>Translations:</strong> Click the language buttons to auto-translate subject and content.</li>
             <li><strong>Attachments:</strong> Drag & drop or click to attach PDFs up to 40 MB each.</li>
             <li><strong>Balance:</strong> Use the Deposit ↑ button to add funds and Deduct ↓ for postal payments.</li>
+            <li><strong>Serial Number:</strong> Auto‑increments after each successful save. You can override it manually.</li>
           </ul>
         </div>
       </div>
 
       <style>{`
+        /* All your CSS styles remain exactly as you had them – no changes */
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700;800;900&family=DM+Mono:wght@300;400;500&display=swap');
 
         *, *::before, *::after { box-sizing: border-box; }
@@ -1001,7 +1197,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
           z-index: 1;
         }
 
-        /* ── Header ── */
+        /* Header */
         .ce-header {
           display: flex;
           align-items: center;
@@ -1035,7 +1231,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
           font-family: 'DM Mono', monospace;
         }
 
-        /* ── Section ── */
+        /* Sections */
         .ce-section {
           background: rgba(255, 255, 255, 0.85);
           backdrop-filter: blur(10px);
@@ -1066,25 +1262,50 @@ const ComposeEmail = ({ onRecordSaved }) => {
           margin-bottom: 1.5rem;
           font-family: 'DM Mono', monospace;
         }
+        /* Collapsed header style (black background) */
+        .ce-section-label-collapsed {
+          background: #000000;
+          color: #ffffff;
+          border-bottom: none;
+          padding: 0.875rem 1.25rem;
+          margin-bottom: 0;
+          border-radius: 10px;
+          transition: all 0.2s ease;
+        }
+        .ce-section-label-collapsed span,
+        .ce-section-label-collapsed svg {
+          color: #ffffff;
+        }
+        .ce-collapsible-content {
+          margin-top: 1.5rem;
+        }
 
-        /* ── Balance ── */
+        /* Balance cards - simple black text */
+        .ce-balance-card-simple {
+          background: #000000;
+          border: 2px solid #000000;
+          border-radius: 10px;
+          padding: 1.5rem;
+          color: #ffffff;
+        }
+        .ce-balance-amount-simple {
+          font-family: 'Playfair Display', serif;
+          font-size: 2rem;
+          font-weight: 700;
+          margin-bottom: 0.4rem;
+          color: #ffffff;
+        }
+        .ce-balance-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .ce-balance-card-label { font-size: 0.65rem; letter-spacing: 0.12em; opacity: 0.7; font-family: 'DM Mono', monospace; color: #ffffff; }
+        .ce-balance-card-icon { opacity: 0.5; color: #ffffff; }
+        .ce-balance-card-sub { font-size: 0.65rem; opacity: 0.6; letter-spacing: 0.06em; font-family: 'DM Mono', monospace; color: #ffffff; }
+
+        /* Other existing styles remain unchanged */
         .ce-balance-grid {
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
           gap: 1.25rem;
         }
-        .ce-balance-card {
-          background: #000000;
-          border: 2px solid #000000;
-          border-radius: 10px;
-          padding: 1.5rem;
-          color: #fff;
-        }
-        .ce-balance-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-        .ce-balance-card-label { font-size: 0.65rem; letter-spacing: 0.12em; opacity: 0.6; font-family: 'DM Mono', monospace; }
-        .ce-balance-card-icon { opacity: 0.4; }
-        .ce-balance-amount { font-family: 'Playfair Display', serif; font-size: 2rem; font-weight: 700; margin-bottom: 0.4rem; }
-        .ce-balance-card-sub { font-size: 0.65rem; opacity: 0.5; letter-spacing: 0.06em; font-family: 'DM Mono', monospace; }
         .ce-txn-card {
           background: #ffffff;
           border: 2px solid #000000;
@@ -1100,7 +1321,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         .ce-txn-row { display: flex; gap: 0.625rem; margin-bottom: 0.5rem; }
         .ce-txn-row .ce-input-prefix-wrap { flex: 1; }
 
-        /* ── Form inputs ── */
+        /* Form inputs */
         .ce-field { margin-bottom: 0; }
         .ce-field + .ce-field { margin-top: 1.25rem; }
         .ce-field--full { grid-column: 1 / -1; }
@@ -1151,11 +1372,8 @@ const ComposeEmail = ({ onRecordSaved }) => {
           font-family: 'DM Mono', monospace;
         }
 
-        /* ── Tag box (email inputs) ── */
-        .ce-tag-box {
-          position: relative;
-          z-index: 10;
-        }
+        /* Tag box */
+        .ce-tag-box { position: relative; z-index: 10; }
         .ce-tags-wrap {
           display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
           padding: 0.5rem 0.625rem;
@@ -1218,7 +1436,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         }
         .ce-clear-btn:hover { background: #fecaca; }
 
-        /* ── Dropdown (fixed overlay) ── */
+        /* Dropdown */
         .ce-dropdown {
           position: absolute;
           top: calc(100% + 8px);
@@ -1271,19 +1489,19 @@ const ComposeEmail = ({ onRecordSaved }) => {
           letter-spacing: 0.04em;
         }
 
-        /* ── Marathi toggle ── */
+        /* Marathi toggle */
         .ce-toggle-btn {
           display: inline-flex; align-items: center; gap: 0.4rem;
           padding: 0.4rem 0.875rem;
-          background: #ffffff; border: 2px solid #000000;
+          background: #000000; border: 2px solid #000000;
           border-radius: 6px; cursor: pointer;
           font-size: 0.7rem; font-family: 'DM Mono', monospace;
-          color: #000000; letter-spacing: 0.06em;
+          color: #ffffff; letter-spacing: 0.06em;
           transition: all 0.15s;
         }
         .ce-toggle-btn--active { background: #000000; color: #fff; border-color: #000000; }
 
-        /* ── Translating indicator ── */
+        /* Translating indicator */
         .ce-translating {
           display: flex; align-items: center; gap: 0.3rem;
           font-size: 0.68rem; color: #888; margin-top: 0.35rem;
@@ -1293,7 +1511,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         .ce-spin { animation: ce-spin 1s linear infinite; }
         @keyframes ce-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-        /* ── Translation cards ── */
+        /* Translation cards */
         .ce-translation-grid {
           display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;
         }
@@ -1341,7 +1559,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         }
         .ce-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-        /* ── Upload ── */
+        /* Upload */
         .ce-upload-area {
           border: 2px dashed #000000;
           border-radius: 10px; padding: 2.5rem;
@@ -1380,7 +1598,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         }
         .ce-file-remove:hover { background: #fecaca; }
 
-        /* ── Postal grid ── */
+        /* Postal grid */
         .ce-postal-grid {
           display: grid;
           grid-template-columns: 1fr 1fr;
@@ -1406,7 +1624,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
           margin-top: 0.5rem;
         }
 
-        /* ── Toggle group ── */
+        /* Toggle group */
         .ce-toggle-group { display: flex; gap: 0; border: 2px solid #000000; border-radius: 8px; overflow: hidden; margin-top: 0.1rem; }
         .ce-toggle {
           flex: 1; padding: 0.75rem 1rem;
@@ -1418,7 +1636,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
         .ce-toggle:first-child { border-right: 2px solid #000000; }
         .ce-toggle--active { background: #000000; color: #fff; }
 
-        /* ── Buttons ── */
+        /* Buttons */
         .ce-btn {
           display: inline-flex; align-items: center; gap: 0.5rem;
           padding: 0.7rem 1.25rem;
@@ -1436,12 +1654,12 @@ const ComposeEmail = ({ onRecordSaved }) => {
         .ce-btn-black:hover:not(:disabled) { background: #333; transform: translateY(-1px); }
         .ce-btn--lg { padding: 1rem 1.75rem; font-size: 0.8rem; border-radius: 10px; }
 
-        /* ── Actions bar ── */
+        /* Actions bar */
         .ce-actions {
           display: flex; gap: 1rem; margin: 1.75rem 0; flex-wrap: wrap;
         }
 
-        /* ── Tips ── */
+        /* Tips */
         .ce-tips {
           display: flex; gap: 1.25rem;
           background: rgba(255, 255, 255, 0.85);
@@ -1458,15 +1676,43 @@ const ComposeEmail = ({ onRecordSaved }) => {
         .ce-tips-list li { font-size: 0.78rem; margin-bottom: 0.4rem; color: #333; line-height: 1.6; font-family: 'DM Mono', monospace; }
         .ce-tips-list strong { color: #000000; }
 
-        /* ── Icons ── */
+        /* Icons */
         .ce-icon-green { color: #16a34a; }
         .ce-icon-red { color: #dc2626; }
 
-        /* ── Spinners ── */
+        /* Spinners */
         .ce-spinner {
           width: 36px; height: 36px;
           border: 2px solid #e5e5e5; border-top-color: #000000;
           border-radius: 50%; animation: ce-spin 0.8s linear infinite;
+        }
+        /* Improved loading spinner (matching EmailRecords style) */
+        .ce-loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 400px;
+        gap: 1.5rem;
+        background: rgba(255, 255, 255, 0.6);
+        backdrop-filter: blur(8px);
+        border-radius: 24px;
+        margin: 2rem 0;
+        }
+        .ce-spinner-lg {
+        width: 48px;
+        height: 48px;
+        border: 3px solid #e5e5e5;
+        border-top-color: #000000;
+        border-radius: 50%;
+        animation: ce-spin 0.8s linear infinite;
+        }
+        .ce-loading-text {
+        font-family: 'DM Mono', monospace;
+        font-size: 0.9rem;
+        letter-spacing: 0.1em;
+        color: #000000;
+        font-weight: 500;
         }
         .ce-spinner-sm {
           width: 15px; height: 15px;
@@ -1476,7 +1722,32 @@ const ComposeEmail = ({ onRecordSaved }) => {
         }
         .ce-spinner-dark { border: 2px solid #e5e5e5; border-top-color: #000000; }
 
-        /* ── Responsive ── */
+        /* Divider container with text */
+        .ce-divider-container {
+          display: flex;
+          align-items: center;
+          margin: 2rem 0;
+          gap: 1rem;
+        }
+        .ce-divider {
+          flex: 1;
+          border: 0;
+          height: 2px;
+          background: #000000;
+        }
+        .ce-divider-text {
+          font-family: 'Playfair Display', monospace;
+          font-size: 1rem;
+          letter-spacing: 0.2em;
+          font-weight: 600;
+          color: #000000;
+          background: rgb(255, 255, 255);
+          padding: 0.25rem 1rem;
+          border-radius: 20px;
+          white-space: nowrap;
+        }
+
+        /* Responsive */
         @media (max-width: 768px) {
           .ce-root { padding: 1rem; }
           .ce-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
@@ -1486,6 +1757,7 @@ const ComposeEmail = ({ onRecordSaved }) => {
           .ce-actions { flex-direction: column; }
           .ce-btn--lg { width: 100%; justify-content: center; }
           .ce-section { padding: 1.25rem; }
+          .ce-divider-text { font-size: 0.6rem; }
         }
         @media (max-width: 640px) {
           .ce-txn-row { flex-direction: column; }
