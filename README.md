@@ -18,7 +18,7 @@ UniMail is a web-based institutional email management application built as a min
 - **Course:** Database Management Systems (DBMS)
 - **Class:** TY-A Computer Engineering
 - **Institution:** K.K. Wagh Institute of Engineering Education and Research
-- **Year:** 2024-2025
+- **Year:** 2025-2026
 
 ***
 
@@ -27,9 +27,6 @@ UniMail is a web-based institutional email management application built as a min
 | Name | Role |
 |------|------|
 | Hrishikesh Gavai | Developer |
-| Dhruvesh Patil | Developer |
-| Nakshatra Rao | Developer |
-| Palak Lokwani | Developer |
 
 ***
 
@@ -368,7 +365,7 @@ Nashik, Maharashtra, India
 
 This project is created for educational purposes as part of the DBMS curriculum at K.K. Wagh Institute of Engineering Education and Research.
 
-**2025 UniMail - KKWIEER**
+**2026 UniMail - KKWIEER**
 
 ***
 
