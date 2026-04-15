@@ -111,8 +111,8 @@ const CAT_LABELS = {
 
 /* ─── Hero carousel images ───────────────────────────────────── */
 const HERO_IMAGES = [
-  'https://clinquant-sprinkles-e2d6e4.netlify.app/assets/kkw-home-DwveAqbx.jpg',
   'https://images.unsplash.com/photo-1629197680187-d75229c25190',
+  'https://clinquant-sprinkles-e2d6e4.netlify.app/assets/kkw-home-DwveAqbx.jpg',
   'https://images.unsplash.com/photo-1653069150536-d1256e2028f1',
 ];
 
@@ -1000,7 +1000,7 @@ const LoginScreen = ({ onLoginSuccess }) => {
             style={{
               backgroundImage: `url('${img}')`,
               opacity: i === slideIndex ? 1 : 0,
-              filter: i === 0 ? 'grayscale(100%)' : 'none',
+              filter: i === 1 ? 'grayscale(100%)' : 'none',
             }}
           />
         ))}
